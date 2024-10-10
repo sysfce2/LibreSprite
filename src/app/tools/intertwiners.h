@@ -40,16 +40,27 @@ public:
         auto p1 = stroke[c].pressure;
         int x2 = stroke[c+1].x;
         int y2 = stroke[c+1].y;
+        auto p2 = stroke[c+1].pressure;
 
-        algo_line(x1, y1, x2, y2, [&](int x, int y){doPointshapePoint(x, y, p1, loop);});
+        algo_line_float(x1, y1,
+                        x2, y2,
+                        [&](int x, int y, float f){
+                          doPointshapePoint(x, y, p1*(1-f) + p2*f, loop);
+                        });
       }
     }
 
     // Closed shape (polygon outline)
     if (loop->getFilled()) {
-      algo_line(stroke[0].x, stroke[0].y,
-                stroke[stroke.size()-1].x,
-                stroke[stroke.size()-1].y, [&](int x, int y){doPointshapePoint(x, y, stroke[0].y, loop);});
+      auto& first = stroke[0];
+      auto& last = stroke[stroke.size() - 1];
+      auto p1 = first.pressure;
+      auto p2 = last.pressure;
+      algo_line_float(first.x, first.y,
+                      last.x, last.y,
+                      [&](int x, int y, float f){
+                        doPointshapePoint(x, y, p1*(1-f) + p2*f, loop);
+                      });
     }
   }
 
@@ -64,7 +75,7 @@ public:
     joinStroke(loop, stroke);
 
     // Fill content
-    doc::algorithm::polygon(stroke.size(), (const int*)&stroke[0], [&](int x, int y, int x2){
+    doc::algorithm::polygon(stroke, [&](int x, int y, int x2){
       doPointshapeHline(x, y, x2, stroke[0].pressure, loop);
     });
   }
@@ -249,13 +260,13 @@ public:
     }
     else {
       for (int c=0; c+1<stroke.size(); ++c) {
-        algo_line(
-          stroke[c].x,
-          stroke[c].y,
-          stroke[c+1].x,
-          stroke[c+1].y,
-          [&](int x, int y){
-            pixelPerfectLine(x, y, stroke[c].pressure, &m_pts);
+        auto& p1 = stroke[c];
+        auto& p2 = stroke[c+1];
+        algo_line_float(
+          p1.x, p1.y,
+          p2.x, p2.y,
+          [&](int x, int y, float f){
+            pixelPerfectLine(x, y, p1.pressure*(1-f) + p2.pressure*f, &m_pts);
           });
       }
     }
@@ -285,8 +296,8 @@ public:
     joinStroke(loop, stroke);
 
     // Fill content
-    doc::algorithm::polygon(stroke.size(), (const int*)&stroke[0], [&](int x, int y, int x2){
-      doPointshapeHline(x, y, x2, stroke[0].pressure, loop);
+    doc::algorithm::polygon(stroke, [&](int x, int y, int x2){
+      doPointshapeHline(x, y, x2, 1.0f, loop);
     });
   }
 };

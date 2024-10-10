@@ -4,6 +4,7 @@
 set(SHE_SOURCES
   common/freetype_font.cpp)
 
+include_directories(${EASYTAB_DIR})
 
 # Debug C/C++ flags
 if(CMAKE_BUILD_TYPE STREQUAL Debug)
@@ -38,7 +39,8 @@ endif()
 if(APPLE)
   list(APPEND SHE_SOURCES
     osx/logger.mm
-    osx/native_dialogs.mm)
+    osx/native_dialogs.mm
+    osx/tablet.mm)
 endif()
 
 if(WITH_GTK_FILE_DIALOG_SUPPORT AND UNIX AND NOT APPLE AND NOT BEOS)

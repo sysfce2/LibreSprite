@@ -22,9 +22,11 @@
 #if __has_include(<SDL2/SDL.h>)
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_image.h>
+#include <SDL2/SDL_syswm.h>
 #else
 #include <SDL.h>
 #include <SDL_image.h>
+#include <SDL_syswm.h>
 #endif
 
 #include <iostream>
@@ -37,8 +39,20 @@
 #include <chrono>
 #include <thread>
 
+float penPressure = 0;
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
+extern "C" {
+    void onPointerEvent(int isPen, float pressure) {
+	if (isPen) {
+	    penPressure = pressure > 0 ? pressure : 0.0001;
+	} else {
+	    penPressure = 0;
+	}
+    }
+}
+extern bool cfginit();
 #endif
 
 static she::System* g_instance = nullptr;
@@ -279,7 +293,20 @@ namespace she {
 
   class SDL2EventQueue : public EventQueue {
   public:
+    PointerType pointerType = PointerType::Mouse;
+
     SDL2EventQueue() {
+#if defined(__EMSCRIPTEN__)
+        EM_ASM(
+            const onPointerEvent = Module.cwrap("onPointerEvent", "", ["number", "number"]);
+	    const listener = event => {
+		onPointerEvent((event.pointerType == "pen")|0, event.pressure);
+	    };
+            Module.canvas.addEventListener("pointerdown", listener);
+	    Module.canvas.addEventListener("pointermove", listener);
+	    Module.canvas.addEventListener("pointerup", listener);
+            );
+#endif
       if (reverseKeyCodeMapping.empty()) {
         for (auto& entry : keyCodeMapping) {
           reverseKeyCodeMapping[entry.second.sheModifier] = &entry.second;
@@ -330,6 +357,24 @@ namespace she {
           SDL2Surface::textureGen++;
           forceFlip();
           continue;
+
+	case SDL_SYSWMEVENT:
+#if defined(EASYTAB_H)
+#if defined(_WIN32)
+	  {
+	    auto& win = sdlEvent.syswm.msg->msg.win;
+	    if (EasyTab_HandleEvent(win.hwnd, win.msg, win.lParam, win.wParam) == EASYTAB_OK) {
+		penPressure = EasyTab->Pressure;
+	    }
+	  }
+#endif
+#if defined(__linux__)
+	    if (EasyTab_HandleEvent(&sdlEvent.syswm.msg->msg.x11.event) == EASYTAB_OK) {
+		penPressure = EasyTab->Pressure;
+	    }
+#endif
+#endif
+	    continue;
 
         case SDL_WINDOWEVENT:
           switch (sdlEvent.window.event) {
@@ -402,7 +447,14 @@ namespace she {
               sdlEvent.motion.x / unique_display->scale(),
               sdlEvent.motion.y / unique_display->scale()
             });
+
+	  event.setPressure(penPressure);
+	  event.setPointerType(pointerType);
           return;
+
+        case SDL_FINGERMOTION:
+          penPressure = sdlEvent.tfinger.pressure;
+          continue;
 
         case SDL_MOUSEWHEEL:
           event.setType(Event::MouseWheel);
@@ -426,7 +478,16 @@ namespace she {
             });
           event.setButton(mouseButtonMapping[sdlEvent.button.button]);
           event.setModifiers(getSheModifiers());
-          event.setPressure(0);
+
+	  if (penPressure > 0.0f) {
+	    pointerType = PointerType::Pen;
+	    event.setPressure(penPressure);
+	    event.setPointerType(pointerType);
+	  } else {
+	    event.setPressure(sdlEvent.type == SDL_MOUSEBUTTONDOWN ? 1.0f : 0.0f);
+	    event.setPointerType(pointerType);
+	    pointerType = PointerType::Mouse;
+	  }
 
           if (sdlEvent.button.clicks > 1 && sdlEvent.type == SDL_MOUSEBUTTONUP) {
             m_events.push(event);
@@ -619,24 +680,27 @@ namespace she {
       }
     }
 
+    std::function<int()> m_func;
     int run(std::function<int()>&& func) override {
       gfxThreadId = std::this_thread::get_id();
       #ifndef EMSCRIPTEN
       mainThreadId = gfxThreadId;
       return func();
       #elif defined(EMSCRIPTEN) && !defined(__EMSCRIPTEN__)
+      m_func = std::move(func);
       // like emscripten, but not really
-      mainThread = std::thread{[this, func = std::move(func)]{
+      mainThread = std::thread{[this]{
         mainThreadId = std::this_thread::get_id();
-	func();
+	m_func();
       }};
       while (!shutdown)(
 	refresh();
       }
       #else
+      m_func = std::move(func);
+
       addEventListener("dragenter", cancelEvent);
       addEventListener("dragover", cancelEvent);
-
       addEventListener("drop", [](void*){
 	EM_ASM({
 	  event.stopPropagation();
@@ -666,13 +730,20 @@ namespace she {
 	static_cast<SDL2EventQueue*>(EventQueue::instance())->queueEvent(event);
       });
 
-      mainThread = std::thread{[this, func = std::move(func)]{
-        mainThreadId = std::this_thread::get_id();
-	func();
-      }};
       emscripten_set_main_loop([]{
-	patchEventListeners();
-	static_cast<SDL2System*>(g_instance)->refresh();
+	  if (!cfginit())
+	      return;
+	  auto sys = static_cast<SDL2System*>(g_instance);
+	  sys->mainThread = std::thread{[]{
+	      auto sys = static_cast<SDL2System*>(g_instance);
+	      sys->mainThreadId = std::this_thread::get_id();
+	      sys->m_func();
+	  }};
+	  emscripten_cancel_main_loop();
+	  emscripten_set_main_loop([]{
+	      patchEventListeners();
+	      static_cast<SDL2System*>(g_instance)->refresh();
+	  }, 0, true);
       }, 0, true);
       #endif
       return 0;
@@ -863,6 +934,6 @@ int main(int argc, char* argv[]) {
     std::cerr << "Critical: Could not initialize SDL2_image (" << IMG_GetError() << "). Aborting." << std::endl;
     return -2;
   }
-
+  SDL_EventState(SDL_FINGERMOTION, SDL_ENABLE);
   return app_main(argc, argv);
 }
